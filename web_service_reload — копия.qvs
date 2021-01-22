@@ -1,0 +1,375 @@
+﻿/**
+*
+* DT1 Запуск Веб сервисов Сирены
+* @param pQueue - Название очереди для запуска, еслим пустой берется 'x' (App_Reload_x) из названия запускающего приложения
+* 
+*/ 
+Sub SirenaWebServiceReload(pQueue)
+
+    $(Must_Include=$(sPathGeneralScripts)/rest_request.qvs);
+    sPathSourceDT1 = '$(sPathDataTier1)/SIRENA';
+    sReloadQueue = if(len('$(pQueue)') > 0, '$(pQueue)', SubField(DocumentTitle(), '_Reload_', 2));
+//     let sNumTimeStart = Num(Now());
+    let sYearMonthNow = Date(Now(), 'YYYYMM');
+
+    let sTimeOut = 18000; // Таймаут ожидания для очереди, в секундах!
+    let sTimeOutDic = 3000; // Taймаут ожидания справочников, в секундах!
+    let sSecToWait = 30; // Время ожидания между проверками, в секундах!
+	let sLastPeriod = Date(Now(), 'YYYYMM'); // Последний загружаемый период в формате ГГГГММ
+	
+    Сервисы:
+    LOAD
+       RowNo() as НомерСтрока
+       , НазваниеCервиса
+       , НазваниеCSV
+       , НазваниеТаблицы
+       , МетодStart
+       , TRIM(РежимПерезагрузки) as РежимПерезагрузки
+       , НачальныйПериод
+       , ПараметрStartDate
+       , ПараметрEndDate
+       , ОстальныеПараметры
+       , If(TRIM(РежимПерезагрузки) = 'CP', SubField(ОстальныеПараметры, ',', 1), Null()) as Прод
+    FROM [$(sPathResources)/DT1/Sirena/ВыгрузкаВебСервисов.xlsx]
+    (ooxml, embedded labels, table is Сервисы)
+    Where 
+        [Актуальность] = 1 
+        and '$(sReloadQueue)' = [Очередь] 
+    ;
+    
+    Переменные:
+    LOAD
+        'Let ' & [НазваниеПеременной] & ' = ' & [ЗначениеПеременной] & ';' as ЗагрузкаПеременной
+        , [НазваниеПеременной] & ' =;' as ОчисткаПеременной
+    FROM [$(sPathResources)/DT1/Sirena/ВыгрузкаВебСервисов.xlsx]
+    (ooxml, embedded labels, table is Переменные)
+    Where [Актуальность] = 1
+    ;
+
+    Подключения:
+    LOAD
+        Подключение
+        , Экспорт
+    FROM [$(sPathResources)/DT1/Sirena/ВыгрузкаВебСервисов.xlsx]
+    (ooxml, embedded labels, table is Подключения)
+    Where [Актуальность] = 1
+    ;
+
+    if (NoOfRows('Подключения') > 1) then
+        Call ThrowError('Задействовано больше одного подключения!');
+    Else
+        Let sExport = Peek('Экспорт');
+        Let sWebServiceConnection = Peek('Подключение');
+        Drop Table Подключения;
+    EndIf
+
+    // Присваивание переменных
+    For i = 0 to NoOfRows('Переменные') - 1
+        sVariableSetupScript = ';' & Peek('ЗагрузкаПеременной', (i));
+        eval = $(sVariableSetupScript);
+    Next i
+    i=; sVariableSetupScript=;
+
+    For sНомерСервис = 0 to NoOfRows('Сервисы') - 1
+
+        Let sRowNum = Peek('НомерСтрока', sНомерСервис, 'Сервисы');
+        Let sIsStartDate = if(Trim(Peek('ПараметрStartDate', sНомерСервис, 'Сервисы')) = '+', 1, 0);
+        Let sStartPeriod = Peek('НачальныйПериод', sНомерСервис, 'Сервисы');
+        Let sTableReloadMode = Trim(Peek('РежимПерезагрузки', sНомерСервис, 'Сервисы'));
+
+        if (sIsStartDate and sTableReloadMode <> 'F') then
+
+            LET sMinDate = sStartPeriod;
+            LET sMaxDate = sLastPeriod; //Date(Now(), 'YYYYMM');
+
+            Помесячно:
+            Load Distinct
+                Year([ТмпДата]) * 100 + Month([ТмпДата]) as ГодМесяцДляИтерации
+                , 0 as ?ОднимФайлом
+                , Num#('$(sRowNum)') as [НомерСтрока]
+            ;
+            Load Distinct
+                MonthStart(Date#($(sMinDate), 'YYYYMM') + iterNo() - 1) as ТмпДата
+                Autogenerate (1)
+            WHILE Date#($(sMinDate), 'YYYYMM') + iterno() - 1 <= Date#($(sMaxDate), 'YYYYMM');
+            sMinDate =;
+            sMaxDate =;
+
+        Else
+
+            Помесячно:
+            Load 
+                if($(#sIsStartDate) = 1, '$(sStartPeriod)', 1) as ГодМесяцДляИтерации
+                , 1 as ?ОднимФайлом
+                , Num#('$(sRowNum)') as [НомерСтрока]
+             AutoGenerate (1)
+             ;
+
+        End If
+
+    Next sНомерСервис
+    sНомерСервис=;
+
+    Left Join(Сервисы)
+    Load * Resident Помесячно;
+    Drop Table Помесячно;
+
+    Left Join(Сервисы)
+    Load
+        AutoNumberHash128([НомерСтрока], [ГодМесяцДляИтерации]) as %Сервис
+        , [НомерСтрока]
+        , [?ОднимФайлом]
+        , [ГодМесяцДляИтерации]
+    Resident Сервисы
+    ;
+    
+    Let sIsNeedCP = Exists('РежимПерезагрузки', 'CP');
+    Trace sIsNeedCP= $(sIsNeedCP);
+    if QvdCreateTime('$(sPathDataTier1)/SIRENA/Периоды.qvd') > 0 and sIsNeedCP then
+        // ЗакрытыеОтчетные периоды
+        Left Join(Сервисы)
+        Load
+        	Num#(Date(BuchPeriod, 'YYYYMM')) as ГодМесяцДляИтерации // ОтчетныйПериод
+            , 'CP' as РежимПерезагрузки
+            , Prod as Прод
+            , Num(Date#(DTend, 'DD/MM/YYYY h:mm:ss')) as ДатаЗакрытияОтчетногоПериода
+        From [$(sPathDataTier1)/SIRENA/Периоды.qvd] (qvd)
+        Where isEnd = 1
+        ;
+    ElseIf sIsNeedCP then
+        Call ThrowError('Для сервисов ориентированных на закрытие отчетного периода, необходимо создать/выгрузить файл Периоды.qvd');
+    End If
+
+    ЗапущенныеСервисы: NoConcatenate Load Null() as [ЗапущенныеСервисы] AutoGenerate(0); // не сохраняет todo
+    СервисВыполненные: NoConcatenate Load Null() as [СервисВыполненные] AutoGenerate(0);
+    Let sTimeElapsed = 0;
+
+    Do While NoOfRows('Сервисы') > 0 and sTimeElapsed <= sTimeOut
+        For IterRow = 0 to NoOfRows('Сервисы') - 1
+			
+            Let sServiceName = Peek('НазваниеCервиса', IterRow, 'Сервисы');
+            Let sTableName = Peek('НазваниеТаблицы', IterRow, 'Сервисы');
+            Let sMethodStart = Peek('МетодStart', IterRow, 'Сервисы');
+            Let sMethodCheck = Replace('$(sMethodStart)', 'start', 'check');
+            LET sMethodCheckVar = Replace('$(sMethodCheck)', '/', '_');
+            Let sCSVFileName = Peek('НазваниеCSV', IterRow, 'Сервисы');
+            Let sIsStartDate = if(Trim(Peek('ПараметрStartDate', IterRow, 'Сервисы')) = '+', 1, 0);
+            Let sIsEndDate = if(Trim(Peek('ПараметрEndDate', IterRow, 'Сервисы')) = '+', 1, 0);
+            Let sClosePeriodDate = Peek('ДатаЗакрытияОтчетногоПериода', IterRow, 'Сервисы');
+            
+			Let sTableReloadMode = Peek('РежимПерезагрузки', IterRow, 'Сервисы');
+            Let sYearMonthIter = Peek('ГодМесяцДляИтерации', IterRow, 'Сервисы');
+            Let sIsOneFile = Peek('?ОднимФайлом', IterRow, 'Сервисы');
+            Let sQvdFile = if(sIsOneFile = 1, '$(sTableName).qvd', '$(sTableName)/$(sYearMonthIter).qvd');
+            Let sNumTimeQvdFile = Num(QvdCreateTime('$(sPathDataTier1)/SIRENA/$(sQvdFile)'));
+
+            Let sReqStartDate = Date(Date#('$(sYearMonthIter)01', 'YYYYMMDD'), 'DD/MM/YYYY');
+            Let sReqEndDate = if(sIsOneFile = 1, Date(MonthEnd(Now()), 'DD/MM/YYYY')
+                , Date(MonthEnd(Date#('$(sYearMonthIter)01', 'YYYYMMDD')), 'DD/MM/YYYY'));
+            
+
+            Let sStartDateNoDel = Replace(sReqStartDate, '/', '');
+            Let sEndDateNoDel = Replace(sReqEndDate, '/', '');
+            Let sOtherParam = Trim(Peek('ОстальныеПараметры', IterRow, 'Сервисы'));
+            Let sIsDict = if(sYearMonthIter = 1 and sIsStartDate = 0, 1, 0);
+            
+            Let sCSVFile = if(sIsDict, '$(sCSVFileName)'
+                , if(sIsEndDate, '$(sCSVFileName)_$(sStartDateNoDel)_$(sEndDateNoDel)'
+                , '$(sCSVFileName)_$(sStartDateNoDel)')) & if('$(sOtherParam)' = '', '.csv', '_' & Replace(Replace(sOtherParam, ',', '_'), ' ', '') & '.csv');
+            Let sOtherParam = if('$(sOtherParam)' = '', '  '''' ', sOtherParam); // ! после CSV файла
+            
+            Let sServiceID = Peek('%Сервис', IterRow, 'Сервисы');
+            sStartDateNoDel=;sEndDateNoDel=;
+            Let sNeedToSkip = if(sTableReloadMode like 'R*' and sTableReloadMode <> 'RF'
+                                  , if(sYearMonthIter < Num#(Date(AddMonths(MonthStart(Now()), (Mid('$(sTableReloadMode)', 2) * -1)),'YYYYMM')), 1, 0)
+                                  , if(sTableReloadMode = 'CP' and $(#sClosePeriodDate) > 0
+                                      , if(sNumTimeQvdFile > ClosePeriodDate, 1, 0), 0));
+                                  
+// 			Trace >> Обработка $(sQvdFile), ?skip = $(sNeedToSkip)<<;
+// 			Trace >> Обработка $(sQvdFile), sNumTimeQvdFile = $(#sNumTimeQvdFile)<<;
+            
+            if sNeedToSkip and $(#sNumTimeQvdFile) > 0 then
+            	Concatenate(СервисВыполненные) Load Num#('$(sServiceID)') as СервисВыполненные AutoGenerate(1);
+                Let sMessage =  chr(10) & '--------------------------------------------------------------' &
+                            chr(10) & '>> ПРОПУСК QVD: $(sQvdFile) <<' &
+                            chr(10) & '--------------------------------------------------------------';
+                Trace $(sMessage);
+			ElseIf (Num(FileTime('$(sExport)/$(sCSVFile)')) > $(#sNumTimeQvdFile)) then
+                
+                Tmp_CSVFields:
+                First 1 LOAD
+                    *
+                FROM [$(sExport)/$(sCSVFile)]
+                (txt, codepage is 1251, no labels, delimiter is ';', msq)
+                ;
+
+                CSVFields:
+                CrossTable(НомерПоля, НазваниеПоля)
+                Load 1, *
+                Resident Tmp_CSVFields
+                ;
+                Drop Table Tmp_CSVFields;
+
+                Tmp_CSVFields:
+                Load
+                    НазваниеПоля
+                    , Concat([НомерПоля], ',') as Поля
+                    , COunt(1) as КолВо
+                Resident CSVFields
+                Group By НазваниеПоля 
+                ;
+                Drop Table CSVFields;
+
+                Let sCSVFieldList=;
+                for i_csv = 0 to NoOfRows('Tmp_CSVFields') - 1
+                    Let sCSVField_Поля = Peek('Поля', i_csv, 'Tmp_CSVFields');
+                    Let sCSVField_КолВо = Peek('КолВо', i_csv, 'Tmp_CSVFields');
+                    Let sCSVField_НазваниеПоля = Peek('НазваниеПоля', i_csv, 'Tmp_CSVFields');
+                    for j_csv = 1 to sCSVField_КолВо
+                        Let sCSVFieldList = sCSVFieldList 
+                                            & chr(10) & if(i_csv = 0 and j_csv = 1, '', ', ') 
+                                            & SubField('$(sCSVField_Поля)', ',' , j_csv) 
+                                            &' as $(sCSVField_НазваниеПоля)' 
+                                            & if(j_csv > 1, j_csv - 1, '');
+                    next j_csv
+                next i_csv
+                i_csv=;j_csv=;sCSVField_КолВо=;sCSVField_НазваниеПоля=;sCSVField_Поля=;
+                Drop Table Tmp_CSVFields;
+                
+                Tmp_$(sTableName):
+                NoConcatenate
+                Load 
+                    $(sCSVFieldList)
+                FROM [$(sExport)/$(sCSVFile)] 
+                (txt, codepage is 1251, no labels, delimiter is ';', header is 1 line, msq)
+                ;
+                Store Tmp_$(sTableName) into [$(sPathDataTier1)/SIRENA/$(sQvdFile)] (qvd);
+                Drop Table Tmp_$(sTableName);
+				Let sCSVFieldList=;
+                
+                Concatenate(СервисВыполненные) Load Num#('$(sServiceID)') as СервисВыполненные AutoGenerate(1);
+                
+                If sIsDict = 0 then
+                	Call Sirena_Receivable ('$(sMethodCheck)');
+                End If
+
+                If sIsDict or _Sirena_Receivable_$(sMethodCheckVar)_Status = 0 then
+                    Rename Table ЗапущенныеСервисы to Tmp_ЗапущенныеСервисы;
+                    ЗапущенныеСервисы: NoConcatenate Load * Resident Tmp_ЗапущенныеСервисы Where [ЗапущенныеСервисы] <> '$(sServiceName)';
+                    Drop Table Tmp_ЗапущенныеСервисы;
+                    _Sirena_Receivable_$(sMethodCheckVar)_Status =;
+                End If
+
+            Else
+                If Exists('ЗапущенныеСервисы', '$(sServiceName)') then
+                   
+                    If sIsDict = 0 and $(#_Sirena_Receivable_$(sMethodCheckVar)_Status) = 0 then
+                    	Call Sirena_Receivable ('$(sMethodCheck)');
+                        If _Sirena_Receivable_$(sMethodCheckVar)_Status = 0 then
+                            Rename Table ЗапущенныеСервисы to Tmp_ЗапущенныеСервисы;
+                            ЗапущенныеСервисы: NoConcatenate Load * Resident Tmp_ЗапущенныеСервисы Where [ЗапущенныеСервисы] <> '$(sServiceName)';
+                            Drop Table Tmp_ЗапущенныеСервисы;
+                            _Sirena_Receivable_$(sMethodCheckVar)_Status =;
+                        End If
+                    Elseif sIsDict and sTimeElapsed > sTimeOutDic then
+                    	Concatenate(СервисВыполненные) Load Num#('$(sServiceID)') as СервисВыполненные AutoGenerate(1);
+                        Trace !Ошибка: Файл: $(sCSVFile) не был создан, запрос не выполнен;
+                    End if
+                    
+                Else
+                	If sIsDict = 0 then
+                    	Call Sirena_Receivable ('$(sMethodCheck)');
+                    EndIf
+                    If sIsDict or _Sirena_Receivable_$(sMethodCheckVar)_Status = 0 then 
+                        Call Sirena_Receivable ('$(sMethodStart)', '$(sReqStartDate)', '$(sReqEndDate)', $(sOtherParam));
+                        Let sMessage =  chr(10) & '--------------------------------------------------------------' &
+                            chr(10) & '>> СТАРТ СЕРВИС: $(sServiceName) <<' &
+                            chr(10) & '>> ТАБЛИЦА: $(sTableName) <<' &
+                            chr(10) & '>> CSV: $(sCSVFile) <<' &
+                            chr(10) & '>> QVD: $(sQvdFile) <<' &
+                            chr(10) & '--------------------------------------------------------------';
+                        Trace $(sMessage);
+                        sMessage=;
+
+                        // Проверка запустился ли сервис
+                        if _Sirena_Receivable_$(vMethodName)_Status = 1 then
+                            Concatenate(ЗапущенныеСервисы) Load '$(sServiceName)' as [ЗапущенныеСервисы] AutoGenerate(1);
+                        Else // Если не может запуститься, пропускаем
+                            Concatenate(СервисВыполненные) Load Num#('$(sServiceID)') as СервисВыполненные AutoGenerate(1);
+                            Trace !Ошибка: Не удается запустить сервис: $(sServiceName), запрос не выполнен;
+                        End If
+                    ElseIf _Sirena_Receivable_$(sMethodCheckVar)_Status = 1 then
+                        Concatenate(ЗапущенныеСервисы) Load '$(sServiceName)' as [ЗапущенныеСервисы] AutoGenerate(1);
+                    End If
+                    _Sirena_Receivable_$(sMethodCheckVar)_Status =;
+                End IF
+
+            End If
+
+        Next IterRow
+        IterRow=;
+        Rename Table Сервисы to Tmp_Сервисы;
+        Сервисы: NoConcatenate Load * Resident Tmp_Сервисы Where not Exists('СервисВыполненные', [%Сервис]);
+        Let sFilesToProceed = NoOfRows('Сервисы');
+        Trace >> Оставшиеся файлы: $(sFilesToProceed) <<;
+        Drop Table Tmp_Сервисы;
+        
+        // Очистка Переменных Веб сервисов сирены и вывод запущенных
+        Let sRunningServices = NoOfRows('ЗапущенныеСервисы');
+        if sRunningServices > 0 then
+            Let sMessage =  chr(10) & '>> Запущенные сервисы($(sRunningServices)): <<';
+            For i = 0 to sRunningServices - 1
+            	sMessage = sMessage & chr(10) & '>> ' & (i+1) & '. ' & Peek('ЗапущенныеСервисы', i, 'ЗапущенныеСервисы');
+                Let sVariableSetupScript = ';Let _Sirena_Receivable_' & i_serv & '_Status=;';
+                eval = $(sVariableSetupScript);
+            Next i
+            Trace $(sMessage);
+        End If
+
+        sMessage=;sRunningServices=;
+        i=; sVariableSetupScript=;
+        
+        if (sFilesToProceed > 0) then
+            Trace >> Ожидание: $(sSecToWait) сек; 
+            Trace ; // для того чтобы убрать дублирование строки во время ожидания
+            Sleep sSecToWait * 1000;  
+            Trace >> Общее время в ожидании: ($(sTimeElapsed)) сек;
+            sTimeElapsed = sTimeElapsed + sSecToWait;
+        End If
+        sFilesToProceed=;
+    Loop
+    Drop Tables ЗапущенныеСервисы, СервисВыполненные, Сервисы; 
+    sServiceName =;
+    sTableName =;
+    sMethodStart =;
+    sMethodCheck =;
+    sMethodCheckVar =;
+    sCSVFileName =;
+    sIsStartDate =;
+    sIsEndDate =;
+    sOtherParam =; 
+    sYearMonthIter =;
+    sIsDict =;
+    sQvdFile =;
+    sReqStartDate =; 
+    sReqEndDate =;
+    sStartDateNoDel =;
+    sEndDateNoDel =;
+    sCSVFile =;
+    sServiceID =;
+    sTimeOut =;
+    sTimeElapsed =;
+    sTableReloadMode =;
+    sYearMonthNow =;
+
+
+    // Очистка Переменных
+    For i = 0 to NoOfRows('Переменные') - 1
+        sVariableSetupScript = ';' &  Peek('ОчисткаПеременной', i);
+        eval = $(sVariableSetupScript);
+    Next i
+    i=; sVariableSetupScript=;
+	Drop Table Переменные;
+    sExport=;sWebServiceConnection=;
+
+End Sub

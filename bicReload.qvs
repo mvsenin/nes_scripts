@@ -1,0 +1,278 @@
+///$tab Vars
+sPathGeneralScripts = 'Lib://QProject/General/QScripts';
+sReloadMode = 'F'; // Full load
+sReloadMode = 'R'; // Partial load
+sReloadQueue = SubField(DocumentTitle(), '_Reload_', 2);
+
+$(Must_Include=$(sPathGeneralScripts)\Paths.qvs);
+$(Must_Include=$(sPathGeneralScripts)\SubsToCreateDT1.qvs);
+
+///$tab UniLoad
+Sub Uniload
+	for Each sSource in DirList(sPathResources & '/DT1/*')
+		sSourceName = SubField(sSource, '/', -1);
+        Let sMessage =  chr(10) & '==============================================================' &
+        				chr(10) & 'ИСТОЧНИК >>>> $(sSourceName) <<<<    |    ОЧЕРЕДЬ >>>> $(sReloadQueue) <<<<' &
+        				chr(10) & '==============================================================';
+        Trace $(sMessage);
+        sPathSourceDT1 = '$(sPathDataTier1)/$(sSourceName)';
+        sPathSourceResources = '$(sPathResources)/DT1/$(sSourceName)';
+
+		Переменные:
+        LOAD
+            #Переменные,
+            ПеременныеОператор & ' ' & ПеременныеНаименование & ПеременныеЗначение as ЗагрузкаПеременной,
+            ПеременныеНаименование & '=;' as ОтчисткаПеременной,
+            ПеременныеНаименование,
+            ПеременныеЗначение,
+            ПеременныеАктуальность,
+            ПеременныеТип,
+            ПеременныеКомментарий,
+            "ПеременныеФлаг_требуется замена $_  на $"
+        FROM [$(sPathSourceResources)/Конфигуратор DT1.xlsx] (ooxml, embedded labels, table is Переменные)
+        Where
+	        ПеременныеАктуальность = 1
+        ;
+
+		For i = 1 to NoOfRows('Переменные');
+			sVariableSetupScript = Peek('ЗагрузкаПеременной', (i-1));
+            Trace $(sVariableSetupScript);
+			$(sVariableSetupScript);
+		Next i;
+
+		//Trace ДАТА НАЧАЛА ПЕРИОДА ИНКРЕМЕНТНОЙ ЗАГРУЗКИ >>>> $(vYYYY)-$(vMM)-$(vDD) <<<<;
+        
+		if QvdCreateTime('$(sPathSourceDT1)/ЛогОбновлений.qvd') > 0 then
+			ЛогОбновлений:
+			load
+				*
+			from [$(sPathSourceDT1)/ЛогОбновлений.qvd] (qvd);
+		else
+			ЛогОбновлений:
+			load
+				text(null()) as ЛогОбновлений_База
+				, text(null()) as ЛогОбновлений_Таблица
+				, text(null()) as ЛогОбновлений_РежимЗагрузки
+				, text(null()) as ЛогОбновлений_ДатаИВремя
+				, text(null()) as ЛогОбновлений_Приложение
+			AutoGenerate 0;
+		end if;
+
+		Подключения:
+		Load Distinct
+			Подключение
+		From [$(sPathSourceResources)/Конфигуратор DT1.xlsx] (ooxml, embedded labels, table is БазыКЗагрузке)
+		Where
+			?ПолноеРучноеОбновление = 1
+		;
+
+		for sConnectionCounter = 1 to FieldValueCount('Подключение')
+			sConnection = fieldvalue('Подключение', sConnectionCounter);
+			LIB CONNECT TO '$(sConnection)';
+
+			БазыКЗагрузке:
+			LOAD
+				"НазваниеБД" as БазыКЗагрузке_Название
+				, "НазваниеDT1" as БазыКЗагрузке_НазваниеDT1
+				, НазваниеБД &'.'& Схема as БазыКЗагрузке_ПредложениеFrom      
+			FROM [$(sPathSourceResources)/Конфигуратор DT1.xlsx] (ooxml, embedded labels, table is БазыКЗагрузке)
+			where
+				?ПолноеРучноеОбновление = 1 
+				and Подключение = '$(sConnection)'
+			;
+
+			for sBaseCounter = 0 to (noofrows('БазыКЗагрузке')-1)
+				sFrom = Peek('БазыКЗагрузке_ПредложениеFrom', sBaseCounter, 'БазыКЗагрузке');
+				sBaseNameDT1 = Peek('БазыКЗагрузке_НазваниеDT1', sBaseCounter, 'БазыКЗагрузке');
+				sReloadStart = now();
+                
+                Trace БД >>>> $(sBaseNameDT1) <<<<;
+				
+				ТаблицыКЗагрузке:    
+				LOAD
+					НазваниеБД as ТаблицыКЗагрузке_НазваниеБД
+					, if(not isnull(НазваниеDT1), НазваниеDT1, НазваниеБД) as ТаблицыКЗагрузке_НазваниеDT1
+					, РежимЗагрузки as ТаблицыКЗагрузке_РежимЗагрузки
+					, РежимХранения as ТаблицыКЗагрузке_РежимХранения
+					, ПолеДляЗагрузкиИХранения as ТаблицыКЗагрузке_ПолеДляЗагрузкиИХранения  
+					, WhereIncremental as ТаблицыКЗагрузке_УсловиеДляИнкремента  // #1 20200623
+					, Where as ТаблицыКЗагрузке_УсловиеДляПолного                // #1 20200623
+					, Select as ТаблицыКЗагрузке_ТекстЗапроса                    // #1 20200623
+					, ?ОграничитьСоставПолей as ?ТаблицыКЗагрузке_ОграничитьСоставПолей
+                    , Очередь
+				FROM [$(sPathSourceResources)/Конфигуратор DT1.xlsx]
+				(ooxml, embedded labels, table is ТаблицыКЗагрузке)
+				where
+                	?Актуальность = 1
+            		and (Очередь = '$(sReloadQueue)' or '$(sReloadQueue)' = '')
+				;
+				
+				for sTableCounter = 0 to (NoOfRows('ТаблицыКЗагрузке')-1)
+					sTableName = Peek('ТаблицыКЗагрузке_НазваниеБД', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableNameDT1 = Peek('ТаблицыКЗагрузке_НазваниеDT1', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableLoadType = Peek('ТаблицыКЗагрузке_РежимЗагрузки', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableSplitFormat = pick(match(Peek('ТаблицыКЗагрузке_РежимХранения', sTableCounter, 'ТаблицыКЗагрузке'), 'F', 'Y', 'Q', 'M'), 'Full', 'YYYY', 'YYYYQQQ', 'YYYYMM');
+					sTableSplitField = Peek('ТаблицыКЗагрузке_ПолеДляЗагрузкиИХранения', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableLimitFields = Peek('?ТаблицыКЗагрузке_ОграничитьСоставПолей', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableWhereIncr = Peek('ТаблицыКЗагрузке_УсловиеДляИнкремента', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableWhereFull = Peek('ТаблицыКЗагрузке_УсловиеДляПолного', sTableCounter, 'ТаблицыКЗагрузке');
+					sTableWhere = if(sReloadMode ='F' or Match(sTableLoadType, 'F', 'M'), sTableWhereFull, if(sReloadMode = 'R' and (sTableLoadType = 'I' or sTableLoadType = 'P'), sTableWhereIncr, null()));
+					sTableCustomSelect = Peek('ТаблицыКЗагрузке_ТекстЗапроса', sTableCounter, 'ТаблицыКЗагрузке'); // #1 20200623
+
+					Let sMessage =  chr(10) & '--------------------------------------------------------------' &
+									chr(10) & 'ТАБЛИЦА >> $(sTableName) <<   |   РЕЖИМ >> $(sTableLoadType) <<' &
+									chr(10) & '--------------------------------------------------------------';
+                    Trace $(sMessage);
+
+					if sTableLimitFields = 1 then
+						СписокПолейКЗагрузке:
+						load
+							concat('['& НазваниеБД & ']', ',' & chr(10)) as СписокПолейКЗагрузке_Скрипт
+						FROM [$(sPathSourceResources)/$(sTableName).xlsx] (ooxml, embedded labels, table is Поля)
+						where
+							?Актуальность = 1
+						;        
+						sFieldList = Peek('СписокПолейКЗагрузке_Скрипт');
+						Drop Table СписокПолейКЗагрузке;
+					else
+						sFieldList = '*';
+					end if;
+
+					if not isnull(sTableSplitField) then
+						ФорматПоляДляРазбиенияТаблицы:
+						load
+							ФорматБД as ФорматПоляДляРазбиенияТаблицы
+						FROM [$(sPathSourceResources)/$(sTableName).xlsx] (ooxml, embedded labels, table is Поля)
+						where
+							НазваниеБД = '$(sTableSplitField)'
+						;        
+						sTableSplitFieldFormat = Peek('ФорматПоляДляРазбиенияТаблицы');
+						Drop Table ФорматПоляДляРазбиенияТаблицы;
+					else
+						sTableSplitFieldFormat = null();
+					end if;
+
+					Trace СПИСОК ПОЛЕЙ ТАБЛИЦЫ >>>> $(sFieldList) <<<<;
+
+					// Начало Custom Iteration - помесячная загрузка, определение перечня месяцев
+					If sTableLoadType = 'M' then
+                    	if sReloadMode = 'F' then // при полной загрузке берём с начала периода
+							LET sMinDate = '$(vStartPeriod1)';
+                        Else                      // иначе считаем, что загрузка инкремента
+                        	LET sMinDate = '$(vYYYY)$(vMM)';
+                        End If
+                        
+						LET sMaxDate = Date(Now(), 'YYYYMM');
+						
+						Помесячно:
+						Load Distinct
+							Year([ТмпДата]) * 100 + Month([ТмпДата]) as ГодМесяцДляИтерации
+						;
+
+						Load Distinct
+							MonthStart(Date#($(sMinDate), 'YYYYMM') + iterNo() - 1) as ТмпДата
+							Autogenerate (1)
+						WHILE Date#($(sMinDate), 'YYYYMM') + iterno() - 1 <= Date#($(sMaxDate), 'YYYYMM');
+
+						LET sMinDate = null();
+						LET sMaxDate = null();
+					Else // нет помесячно нарезки
+						Помесячно:
+						Load * Inline  [
+							ГодМесяцДляИтерации, 
+							*
+						];
+					EndIf;
+
+					for Each item in FieldValueList('ГодМесяцДляИтерации')
+						TRACE ПЕРИОД НАРЕЗКИ >>>> $(item) <<<<;
+						  
+						If item = '*' then
+							LET sIncrWhere = sTableWhere;
+						Else
+							LET sIncrWhere = Replace('$(sTableWhere)','{%Period%}', $(item));
+						Endif;
+						  
+						Trace УСЛОВИЕ SQL >>>> $(sIncrWhere) <<<<;
+						
+						//Call SqlSelect(sFrom, sTableName, sFieldList, sIncrWhere, sTableCustomSelect);
+
+						if sTableNameDT1 <> sTableName then
+							rename table $(sTableName) to $(sTableNameDT1);
+						end if;
+
+						//Call CustomStore(sPathSourceDT1&'/'&sBaseNameDT1, sTableNameDT1, sTableSplitFormat, sTableSplitField, sTableSplitFieldFormat, 'Replace', null(), null());
+
+						concatenate(ЛогОбновлений)
+						load
+							text('$(sFrom)') as ЛогОбновлений_База
+							, text('$(sTableName)') as ЛогОбновлений_Таблица
+							, text('$(sReloadMode)') as ЛогОбновлений_РежимЗагрузки
+							, Timestamp('$(sReloadStart)') as ЛогОбновлений_ДатаИВремя
+							, text('$(sApplication)') as ЛогОбновлений_Приложение
+						AutoGenerate 1;
+					Next item;
+
+					Drop Table Помесячно;
+					// Конец Custom Iteration - помесячная загрузка
+				
+				Next sTableCounter;
+				
+				Drop Table ТаблицыКЗагрузке;
+			
+			Next sBaseCounter;
+
+			DisConnect;
+			Drop Table БазыКЗагрузке;
+		Next sConnectionCounter;
+
+		Call CustomStore(sPathSourceDT1, 'ЛогОбновлений', 'FULL', null(), null(), 'Replace', null(), null());
+
+		// Отчистка переменных из конгфигуратора
+        if NoOfRows('Переменные') > 0 then
+            For sI = 1 to FieldValueCount('ОтчисткаПеременной')
+                Let sVariableSetupScript  = FieldValue('ОтчисткаПеременной', sI);
+                $(sVariableSetupScript);
+            Next sI
+            sVariableSetupScript=;
+            Drop Table Переменные;
+        EndIf
+
+        sI=;
+	Next sSource;
+
+EndSub;
+
+///$tab CALLS
+Call Uniload;
+
+///$tab The End.
+sPathGeneralScripts=;
+sReloadMode=;
+
+sSource=;
+sSourceName=;
+sPathSourceDT1=;
+sPathSourceResources=;
+sConnectionCounter=;
+sConnection=;
+sBaseCounter=;
+sFrom=;
+sBaseNameDT1=;
+sReloadStart=;
+sTableName=;
+sTableNameDT1=;
+sTableLoadType=;
+sTableSplitFormat=;
+sTableSplitField=;
+sTableLimitFields=;
+sTableWhereIncr=;
+sTableWhereFull=;
+sTableWhere=;
+sTableCustomSelect=;
+sFieldList=;
+sTableSplitFieldFormat=;
+
+sMessage=;
+
+Exit Script;

@@ -1,0 +1,8 @@
+Sub CleanFile(aFile)
+	if FileTime('$(aFile)') then
+        emp:
+        Load Null() as "  " AutoGenerate 0;
+
+        Store emp into [$(aFile)] (txt);
+    EndIf
+EndSub

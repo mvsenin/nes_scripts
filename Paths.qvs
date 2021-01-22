@@ -1,0 +1,45 @@
+Trace >> —оздаЄм переменные с пут€ми к проектными каталогам;
+
+// определение среды загрузки-----------------------
+if Len(sPath) = 0 then // если путь уже установлен, но брать его - нужно дл€ обновлени€ приложений без префикса Dev_ или Test_
+	if DocumentTitle() like 'Dev_*' then
+		Set sPath = 'lib://QProject/SourceDocumentsDev';
+		sPathDataTier1 = sPath & '/QData/DataTier1';
+		sPathDataTier1Hermes = sPathDataTier1 & '/Hermes/HermesU_test';
+		sPathDataTier1Hermes = sPathDataTier1 & '/Hermes/HermesU';
+		Trace среда 'Dev';
+	elseif DocumentTitle() like 'Test_*' then
+		Set sPath = 'lib://QProject/SourceDocumentsTest';
+		sPathDataTier1 = sPath & '/QData/DataTier1';
+		sPathDataTier1Hermes = sPathDataTier1 & '/Hermes/HermesU_test';
+		Trace среда 'Test';
+	else
+		Set sPath = 'lib://QProject/SourceDocumentsProd';
+		sPathDataTier1 = sPath & '/QData/DataTier1';
+		sPathDataTier1Hermes = sPathDataTier1 & '/Hermes/HermesU';
+		Trace среда 'Prod';
+	end if;
+else
+	Trace »спользовать предопределЄнную в приложении среду '$(sPath)';
+	sPathDataTier1 = sPath & '/QData/DataTier1';
+	sPathDataTier1Hermes = sPathDataTier1 & '/Hermes/HermesU';
+end if;
+// определение среды загрузки-----------------------
+
+//  аталог с файлами CSV из —ирены
+Let sSirenaExport = 'lib://SIRENA_EXPORT';
+Let sCacheDateDiff = 21548;		// кол-во дней до нулевой даты в Каше :-)
+Let sCacheTimeFactor = 86400;	// кол-во секунд в сутках, т.к. в Каше время в секундах
+
+//  аталог DT1 дл€ данных —ирены
+sPathDataTier1Sirena = sPathDataTier1 & '/SIRENA';
+
+sPathResources = sPath & '/QResources';
+sSourceData = sPath & '/SourceData';
+sPathDataTier2 = sPath & '/QData/DataTier2';
+sPathScripts = sPath & '/QScripts';
+sApplication = DocumentName();
+
+Trace << —оздаЄм переменные с пут€ми к проектными каталогам;
+
+sRollbackMonths = 2; // кол-во мес€цев отката дл€ пересчЄта данных на DT2

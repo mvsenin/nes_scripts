@@ -1,0 +1,87 @@
+trace xxx;
+
+Sub ОбработкаДоговоровСирены(aSource, aTarget)
+
+	if QvdCreateTime('$(aSource)') then
+
+    Договоры:
+    LOAD
+        DgID as ИдентифДоговора
+        , BSPID & '|' & DgID as %Договор
+        , BSPID & '|' & DgFaceNum as %ЛицевойСчет
+        , AbFullName as [ФИО абонента]
+        , CmpName as [Название компании]
+        , JurAbName as [Код юр.лица]
+        , DgFaceNum as [Лицевой счет]
+        , DgNDogovor as [№ договора]
+        , DgType as [Тип договора]
+        , ApplyMap('СтатусДоговора',DgStatus) as [Статус договора]
+        , Date(Floor(Date(DgwwDate) - $(sCacheDateDiff))) as [Дата заведения договора]
+        , Date(Floor(Date(DgCDate) - $(sCacheDateDiff))) as [Дата создания договора]
+        , Date(Floor(Date(DgBDate) - $(sCacheDateDiff))) as [Дата начала договора]
+        , Date(Floor(Date(DgEDate) - $(sCacheDateDiff))) as [Дата окончания договора]
+        , DgServiceType as [Тип обслуживания]
+        , DgCRooms as [Кол-во комнат] // для нормативов (отчет 12)
+        , DgRezerv as [Тип жилья]
+        , adrsCity & ',' & adrsStreet & ', д. ' & adrsHouse  &  if(adrsFlat>0, ', кв. ' & adrsFlat) as Адрес
+        , adrsCity as Город
+        , adrsStreetID
+        , adrsStreet as Улица
+        , adrsHouseID
+        , adrsHouse as Дом
+        , ApplyMap('ТипДома', adrsHouseType) as [Тип дома]
+        , if(adrsHouseType = 1, 1, 0) as IsPrivate // для нормативов (отчет 12)
+        , adrsFlat as Квартира
+        , 'Маршрут 1 (временный)' as Маршрут
+        , adrsSettle as Поселение
+        , adrsUchPristov as УчПристав
+        , adrsUchastok as Участок
+        , adrsUpravdom as Управдом
+        , DgsostPU
+        , DgIsExistsEventT1
+        , BSPID
+        , ApplyMap('МапПродукция', DgType) as Продукция
+        , adrsHouseCookType // для нормативов (отчет 12)
+        , AbPhone as [Телефон]
+        , AbPhoneCell as [Сотовый телефон]
+        , AbPhoneWork as [Рабочий телефон]
+        , ApplyMap('ФормаУправления', FormaUp) as [Тип формы управления]
+    FROM [$(aSource)] (qvd);
+
+    CALL BIC_NoOfRows('Договоры', 'изначально');
+
+    // Добавление руководителя (отчет 12)
+    Руководители:
+    LOAD Distinct
+        adrsStreetID as adrsStreetID
+        , adrsHouse as Дом
+        , BSPID as BSPID
+        , SA as [Руководитель группы/Начальник сектора]
+        , LA as [Агент (линейный)]
+        , UCH as [Участок ОПЭН]
+    FROM [$(sPathDataTier1Sirena)/Маршруты.qvd] (qvd)
+    Where
+        SA <> 'Автоматическая Система Импорта' // пришлось убрать ввиду дублей при джойне
+    ;
+
+    Left Join(Договоры)
+    Load
+        adrsStreetID
+        , Дом
+        , BSPID
+        , "Руководитель группы/Начальник сектора"
+        , "Агент (линейный)"
+        , "Участок ОПЭН"
+    Resident Руководители;
+
+    Drop Table Руководители;
+
+    CALL BIC_NoOfRows('Договоры', 'lj1');
+
+    Store Договоры into [$(aTarget)] (qvd);
+    Drop Table Договоры;
+
+	End If
+
+EndSub
+;

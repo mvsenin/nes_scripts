@@ -1,0 +1,111 @@
+sub CustomStore(pLib, pTable, pSplitFormat, pSplitField, pSplitFieldFormat, pAddOrReplace, pIdField, pExistField)
+
+  CustomStore.StartTime = Now();
+  Trace start store $(pTable);
+
+  CustomStore.FullPath = '$(pLib)/$(pTable)';
+  CustomStore.WhereClause = if( pAddOrReplace = 'Add', if( not IsNull(pExistField), 'where not exists($(pIdField)) and exists($(pExistField), $(pIdField))', if( not IsNull(pIdField), 'where not exists($(pIdField))', '')), '');
+
+  if pSplitFormat = 'Full' then
+    if isnull(QvdCreateTime('$(CustomStore.FullPath).qvd')) or pAddOrReplace = 'Replace' then
+      trace режим полной перезаписи файла;
+    else 
+      trace режим добавления записей и последующего пересохранения;
+      Concatenate($(pTable))
+      load
+          *
+      from [$(CustomStore.FullPath).qvd](qvd)
+      $(CustomStore.WhereClause)
+      ;
+    end if;
+    
+    store $(pTable) into [$(CustomStore.FullPath).qvd](qvd);
+  
+  else
+    CustomStore.LoadSplitField = if(not IsNull(pSplitFieldFormat), 'date#(SplitFieldAndValues_Field, ' & chr(39) & pSplitFieldFormat & chr(39) & ')', 'SplitFieldAndValues_Field');
+
+    Tmp_SplitFieldAndValues:
+    load 
+        text(date($(CustomStore.LoadSplitField), '$(pSplitFormat)')) as SplitFieldAndValues_Values
+        ,SplitFieldAndValues_Field 
+    ;
+    load
+        FieldValue('$(pSplitField)', iterno()) as SplitFieldAndValues_Field 
+    AutoGenerate 1
+    While IterNo() <= FieldValueCount('$(pSplitField)')
+    ;
+    for CustomStore.Counter = 1 to FieldValueCount('SplitFieldAndValues_Values')
+        CustomStore.CurrentSplitValue = fieldvalue('SplitFieldAndValues_Values', CustomStore.Counter);
+        Tmp_CurrentSplitFieldValues:
+        Load
+            SplitFieldAndValues_Field as CurrentSplitFieldValues
+        Resident Tmp_SplitFieldAndValues
+        where SplitFieldAndValues_Values ='$(CustomStore.CurrentSplitValue)'
+        ;
+		
+        Tmp_SplitTable:
+    	noconcatenate
+        Load
+            *
+        Resident $(pTable)
+        where exists(CurrentSplitFieldValues, $(pSplitField))
+        ;
+        drop Table Tmp_CurrentSplitFieldValues;
+        
+        if isnull(QvdCreateTime('$(CustomStore.FullPath)/$(pSplitFormat)/$(CustomStore.CurrentSplitValue).qvd')) or pAddOrReplace = 'Replace' then
+          trace режим полной перезаписи файла;
+        else 
+          trace режим добавления записей и последующего пересохранения;
+          Concatenate(Tmp_SplitTable)
+          load
+              *
+          from [$(CustomStore.FullPath)/$(pSplitFormat)/$(CustomStore.CurrentSplitValue).qvd](qvd)
+          $(CustomStore.WhereClause)
+          ;
+        end if;
+		
+		// Проверка на завершенность итераций
+		// if (len(item) > 0 and item like '*|*') then
+			// Let sIterPer = SubField(item, '|', 2);
+			// if (Right(item, 2) = '|1') then
+				// Let sIterPrevPer = sIterPer - 1;
+				// If (FieldNumber('MonthDayLoad_Iteration_$(sIterPrevPer)_3', 'Tmp_SplitTable') > 0) then
+					// Drop Field MonthDayLoad_Iteration_$(sIterPrevPer)_3 From Tmp_SplitTable;
+				// EndIf;
+				// sIterPrevPer=;
+				// Concatenate (Tmp_SplitTable) Load Null() as MonthDayLoad_Iteration_$(sIterPer)_1 AutoGenerate(0);
+			// ElseIf (Right(item, 2) = '|2') then
+				// Rename Field MonthDayLoad_Iteration_$(sIterPer)_1 to MonthDayLoad_Iteration_$(sIterPer)_2;
+			// ElseIf (Right(item, 2) = '|3' and sIterPer = SubField(item, '|', 1)) then
+				// Drop Field MonthDayLoad_Iteration_$(sIterPer)_2;	
+			// ElseIf (Right(item, 2) = '|3') then
+				// Rename Field MonthDayLoad_Iteration_$(sIterPer)_2 to MonthDayLoad_Iteration_$(sIterPer)_3;
+			// EndIf;
+			// sIterPer=;
+		// EndIf;
+    
+        store Tmp_SplitTable into [$(CustomStore.FullPath)/$(pSplitFormat)/$(CustomStore.CurrentSplitValue).qvd](qvd);
+        Drop Table Tmp_SplitTable;
+    
+    next CustomStore.Counter;
+    
+    Drop Table Tmp_SplitFieldAndValues;
+    
+  end if;  
+      
+  drop table $(pTable);    
+
+  CustomStore.EndTime = Now();
+  CustomStore.Duration = Interval(CustomStore.EndTime - CustomStore.StartTime);
+  Trace end select $(pTable), duration time = $(CustomStore.Duration);
+    
+  CustomStore.FullPath = null();
+  CustomStore.WhereClause = null();
+  CustomStore.CurrentSplitValue = null();
+  CustomStore.Counter = null();
+  CustomStore.StartTime = null();
+  CustomStore.EndTime = null();
+  CustomStore.Duration = null();
+  CustomStore.LoadSplitField = null();
+
+end sub

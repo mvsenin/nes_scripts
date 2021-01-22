@@ -1,0 +1,4 @@
+//Подключаем функции используемые для создания DT1
+$(Must_Include=$(sPathGeneralScripts)\subCustomStore.qvs);
+$(Must_Include=$(sPathGeneralScripts)\subSqlSelect.qvs)
+$(Must_Include=$(sPathGeneralScripts)\subSqlSelect_test.qvs)

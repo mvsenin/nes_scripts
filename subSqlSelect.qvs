@@ -1,0 +1,132 @@
+Sub SqlSelect(pBaseScheme, pTable, pListOfFields, pWhere, pCustomRequest, pTableLoadType)
+
+	SqlSelect.StartTime = Now();
+	Trace start select $(pTable);
+
+// if (pTableLoadType) = 'M' then 
+	// ErrorMode = 0;
+	// let sDoload = 1;
+	// let sTries = 1;
+// else 
+	// ErrorMode = 1;
+	// let sDoload = 1;
+	// let sTries = 2;
+// endif;
+
+// Do While (sTries <= 2 and sDoload = 1)
+
+// if (pTableLoadType) = 'M' then 
+	// Trace >> LOAD TABLE TRY #$(sTries);
+	// if sTries > 1 then 
+		// sleep 5000;
+	// EndIf;
+// Endif;
+
+//>> #1 20200623
+	Let SqlSelect.SQL = '';
+	Let nl = ' & chr(10) & ';
+
+	if not isnull(pCustomRequest) then  
+		SqlSelect.WhereClause = if(not isnull(pWhere), if((SubStringCount(lower(pWhere), 'where') = 0) and (SubStringCount(lower(pCustomRequest), 'where') = 0), 'where $(pWhere)', pWhere), '');
+
+		Trace SQL: $(pCustomRequest);
+		Trace WHERE: $(SqlSelect.WhereClause);
+
+		// Готовим логирование SQL-запроса
+		Let SqlSelect.SQLLog = Replace('<nl>$(pCustomRequest)<nl>$(SqlSelect.WhereClause)<nl>;<nl>', chr(10), '<nl>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, ',', '<comma>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, '[', '<l>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, ']', '<r>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, '"', '<delimiter>');
+
+		$(pTable):
+		sql $(pCustomRequest)
+		$(SqlSelect.WhereClause)
+		;
+		// sDoload = If(len(ScriptError) > 0, 1, 0);
+	else
+		SqlSelect.WhereClause = if(not isnull(pWhere), if(SubStringCount(lower(pWhere), 'where') = 0, 'where $(pWhere)', pWhere), '');
+
+		Bit_Fields:
+		sql select 
+			COLUMN_NAME as col 
+		From INFORMATION_SCHEMA.COLUMNS
+		Where TABLE_NAME = '$(pTable)' and DATA_TYPE = 'bit'
+		;
+
+		let SqlSelect.sHint = '';
+		if Upper('CECalcProtSetHours') = Upper('$(pTable)') then
+			let SqlSelect.sHint = 'WITH (NOLOCK)';
+			let SqlSelect.sHint = 'with(index(IX_CECalcProtSetHours_1_))';
+		endif
+
+		let sTempFields = pListOfFields;
+		For Each bit_field in FieldValueList('col')
+			sTempFields = Replace('$(sTempFields)', '[$(bit_field)]', 'Cast([$(bit_field)] as tinyint) as $(bit_field)');
+		Next bit_field;
+		Drop Table Bit_Fields;
+
+		// Готовим логирование SQL-запроса
+		Trace BaseScheme: $(pBaseScheme);
+		Trace Table: $(pTable);
+		Trace Hint: $(SqlSelect.sHint);
+		Trace WhereClause: $(SqlSelect.WhereClause);
+		Trace Table: $(pTable);
+
+		Let SqlSelect.SQL = 'select' $(nl)
+							'$(sTempFields)' $(nl)
+							'From $(pBaseScheme).[$(pTable)] $(SqlSelect.sHint)' $(nl)
+//							'From [$(pTable)] $(SqlSelect.sHint)' $(nl)
+							'$(SqlSelect.WhereClause)' $(nl)
+							';' $(nl);
+
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQL, chr(10), '<nl>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, ',', '<comma>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, '[', '<l>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, ']', '<r>');
+		Let SqlSelect.SQLLog = Replace(SqlSelect.SQLLog, '"', '<delimiter>');
+
+		$(pTable):
+		sql $(SqlSelect.SQL)
+		;
+
+		sTempFields=;
+		SqlSelect.sHint=;
+		// sDoload = If(len(ScriptError) > 0, 1, 0);
+	end if;
+
+	Log:
+	Load
+		chr(10) & Replace(Replace(Replace(Replace(Replace(Query, '<nl>', chr(10)), '<comma>', ','), '<l>', '['), '<r>', ']'), '<delimiter>', '"') as Query
+	Inline [
+	Query
+	$(SqlSelect.SQLLog)
+	];
+
+	Store Log into [$(sPathSourceDT1)/$(sBaseNameDT1)/.SqlLogs/$(sReloadQueue).$(pTable).csv] (txt, delimiter is ';');
+	Drop Table Log;
+//<< #1 20200623 
+
+// sTries = sTries + 1;
+// Loop
+
+// if sDoload = 1 then 
+    // sEndedWithError = 1;
+// EndIf;
+
+// ErrorMode = 1;
+// sDoload =;
+// sTries =;
+
+	nl=;
+	SqlSelect.EndTime = Now();
+	SqlSelect.Duration = Interval(SqlSelect.EndTime - SqlSelect.StartTime);
+	Trace end select $(pTable), duration time = $(SqlSelect.Duration);
+
+	SqlSelect.SQLLog = null();
+	SqlSelect.SQL = null();
+	SqlSelect.WhereClause = null();
+	SqlSelect.StartTime = null();
+	SqlSelect.EndTime = null();
+	SqlSelect.Duration = null();
+end sub

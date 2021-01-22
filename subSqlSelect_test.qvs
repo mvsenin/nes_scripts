@@ -1,0 +1,179 @@
+sub SqlSelect_test(pBaseScheme, pTable, pListOfFields, pWhere, pCustomRequest, pTableLoadType, pTablePath)
+
+  SqlSelect.StartTime = Now();
+  Trace start select $(pTable);
+
+// if (pTableLoadType) = 'M' then 
+	// ErrorMode = 0;
+	// let sDoload = 1;
+	// let sTries = 1;
+// else 
+	// ErrorMode = 1;
+	// let sDoload = 1;
+	// let sTries = 2;
+// endif;
+
+// Do While (sTries <= 2 and sDoload = 1)
+
+// if (pTableLoadType) = 'M' then 
+	// Trace >> LOAD TABLE TRY #$(sTries);
+	// if sTries > 1 then 
+		// sleep 5000;
+	// EndIf;
+// Endif;
+
+//>> #1 20200623 
+  if not isnull(pCustomRequest) then  
+	SqlSelect.WhereClause = if(not isnull(pWhere), if((SubStringCount(lower(pWhere), 'where') = 0) and (SubStringCount(lower(pCustomRequest), 'where') = 0), 'where $(pWhere)', pWhere), '');
+
+	Trace SQL: $(pCustomRequest);
+	Trace WHERE: $(SqlSelect.WhereClause);
+
+    $(pTable):
+    sql $(pCustomRequest)
+	$(SqlSelect.WhereClause)
+    ;
+	// sDoload = If(len(ScriptError) > 0, 1, 0);
+	
+  else
+	SqlSelect.WhereClause = if(not isnull(pWhere), if(SubStringCount(lower(pWhere), 'where') = 0, 'where $(pWhere)', pWhere), '');
+	
+	Bit_Fields:
+	sql select 
+	    COLUMN_NAME as col 
+    From INFORMATION_SCHEMA.COLUMNS
+    Where TABLE_NAME = '$(pTable)' and DATA_TYPE = 'bit'
+	;
+	
+	For Each bit_field in FieldValueList('col')
+	    pListOfFields = Replace('$(pListOfFields)', '[$(bit_field)]', 'Cast([$(bit_field)] as tinyint) as $(bit_field)');
+	Next bit_field;
+	Drop Table Bit_Fields;
+	
+	// Загрузка по кластерному полю
+	if pTableLoadType = 'MC' then
+		if (SqlSelect.WhereClause like '*{%ClusteredIndex(*)%}*') then
+			Let SqlSelect.Clustered = textbetween('$(SqlSelect.WhereClause)', '{%ClusteredIndex(', ')%}');
+			SqlSelect.WhereClause = Replace('$(SqlSelect.WhereClause)', '{%ClusteredIndex($(SqlSelect.Clustered))%}', '');
+			Let SqlSelect.Limit = textbetween('$(SqlSelect.WhereClause)', '{%Limit(', ')%}');
+			SqlSelect.WhereClause = Replace('$(SqlSelect.WhereClause)', '{%Limit($(SqlSelect.Clustered))%}', '');
+			SqlSelect.Limit = If(SqlSelect.Limit > 0, SqlSelect.Limit, 2500000); // Лимит по умолчанию 2,5 млн
+
+			Trace >>> StartMinMax;
+			
+			Let SqlSelect.FilePath = '$(pTablePath)/YYYYMM/$(SqlSelect.Per).qvd';
+					
+			if (QvdCreateTime('$(SqlSelect.FilePath)')) > 0 then
+				$(pTable):
+				NoConcatenate Load * From [$(SqlSelect.FilePath)] (qvd);
+				if FieldNumber('ScriptFromTo', 'pTable') > 0 then
+					Let SqlSelect.RangeFrom = Peek('ScriptFromTo', -2);
+					Let SqlSelect.RangeTo = Peek('ScriptFromTo', -1);
+					Let SqlSelect.MaxClust = Peek('ScriptMinMaxClust', -1);
+			        Let SqlSelect.MinClust = Peek('ScriptMinMaxClust', -2);
+					Drop Field ScriptFromTo;
+					Drop Field ScriptMinMaxClust;
+				else 
+					Drop Table $(pTable);
+				end if
+			end if
+			
+			if not (SqlSelect.MaxClust > 0 and SqlSelect.MinClust > 0) then
+				ClMinMax:
+				sql select
+					Max($(SqlSelect.Clustered)) as MaxClust
+					, Min($(SqlSelect.Clustered)) as MinClust
+				From $(pBaseScheme)."$(pTable)"
+				$(SqlSelect.WhereClause)
+				;
+				
+				Let SqlSelect.MaxClust = Peek('MaxClust');
+				Let SqlSelect.MinClust = Peek('MinClust');
+				Drop Table ClMinMax;
+			end if
+			
+			Let SqlSelect.Range = SqlSelect.MaxClust - SqlSelect.MinClust;
+			Let SqlSelect.Step = If(SqlSelect.Range * 0.1 > 1, floor(SqlSelect.Range), 1);
+			Let SqlSelect.RangeTo = Alt(SqlSelect.RangeTo, SqlSelect.MinClust + SqlSelect.Step);
+			Let SqlSelect.RangeFrom = Alt(SqlSelect.RangeFrom, SqlSelect.MinClust);
+			
+			if len(item) > 0 then 
+				Let SqlSelect.Per = left(item, 6);
+			else 
+				Let SqlSelect.Per = 'no_per';
+			end if
+			
+			
+			Do While SqlSelect.RangeTo <= SqlSelect.MaxClust
+				CntRows:
+				sql select
+					Count(*) as CntRows
+				From $(pBaseScheme)."$(pTable)"
+				$(SqlSelect.Clustered) < $(SqlSelect.RangeTo) AND $(SqlSelect.Clustered) > $(SqlSelect.RangeFrom)
+				AND ($(SqlSelect.WhereClause))
+				;
+				Let SqlSelect.CntRows = Peek('CntRows');
+				
+				if SqlSelect.CntRows <= SqlSelect.Limit then
+					$(pTable):
+					sql select
+					   $(pListOfFields)
+					From $(pBaseScheme)."$(pTable)"
+					$(SqlSelect.Clustered) < $(SqlSelect.RangeTo) AND $(SqlSelect.Clustered) > $(SqlSelect.RangeFrom)
+					AND ($(SqlSelect.WhereClause))
+					;
+					SqlSelect.RangeFrom = SqlSelect.RangeTo;
+					SqlSelect.RangeTo = if(SqlSelect.RangeTo + SqlSelect.Step <= SqlSelect.MaxClust, SqlSelect.RangeTo + SqlSelect.Step, SqlSelect.MaxClust);
+					
+					if (SqlSelect.RangeTo <> SqlSelect.MaxClust) then
+						Concatenate($(pTable)) Load $(SqlSelect.MinClust) as ScriptMinMaxClust, $(SqlSelect.RangeFrom) as ScriptFromTo Autogenerate(1);
+						Concatenate($(pTable)) Load $(SqlSelect.MaxClust) as ScriptMinMaxClust, $(SqlSelect.RangeTo) as ScriptFromTo Autogenerate(1);
+						Store $(pTable) to [$(SqlSelect.FilePath)] (qvd);
+						Drop Fields ScriptMinMaxClust, ScriptFromTo;
+					else 
+						Store $(pTable) to [$(SqlSelect.FilePath)] (qvd);
+					end if
+				Else 
+					SqlSelect.RangeTo = floor(SqlSelect.RangeFrom + SqlSelect.Step * 0.5);
+				end if
+			Loop
+			Drop Table $(pTable);
+		end if
+	
+	else
+		$(pTable):
+		sql select
+		   $(pListOfFields)
+		From $(pBaseScheme)."$(pTable)"
+		$(SqlSelect.WhereClause)
+		;
+		// sDoload = If(len(ScriptError) > 0, 1, 0);
+	end if
+	
+	
+	
+
+    
+  end if;
+//<< #1 20200623 
+
+// sTries = sTries + 1;
+// Loop
+
+// if sDoload = 1 then 
+    // sEndedWithError = 1;
+// EndIf;
+
+// ErrorMode = 1;
+// sDoload =;
+// sTries =;
+
+  SqlSelect.EndTime = Now();
+  SqlSelect.Duration = Interval(SqlSelect.EndTime - SqlSelect.StartTime);
+  Trace end select $(pTable), duration time = $(SqlSelect.Duration);
+  
+  SqlSelect.WhereClause = null();
+  SqlSelect.StartTime = null();
+  SqlSelect.EndTime = null();
+  SqlSelect.Duration = null();
+end sub

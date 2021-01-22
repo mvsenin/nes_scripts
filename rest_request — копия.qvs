@@ -1,0 +1,132 @@
+﻿// Сетевая папка с файлами сирены завязана на коннектор SIRENA_EXPORT
+
+Sub Sirena_Receivable(vMethod, vDateStart, vDateEnd, vDogType, vOstType)
+/*
+Вызвать метод Сирены для ДЗ:
+@param vMethod - вызываемый метод
+ - start - запустить расчет
+ - check - проверить статус выполнения расчета
+ - stop - остановить расчет
+@param vDateStart - дата начала периода для метода start
+@param vDateEnd - дата окончания периода для метода start
+@param vDogType - DgType
+
+Методы возвращают статус выполенения расчета/запроса на стороне Cache:
+@var _Sirena_Receivable_$(vMethod)_Status - результат вызова соотв. метода:
+ - start:
+        Code = 0 -> Расчёт не запущен
+		Code = 1 -> Расчёт запущен
+ - check:
+        Code = 0 -> Расчёт не выполняется
+		Code = 1 -> Расчёт выполняется
+ - stop:
+        Code = 0 -> Расчёт не выполнялся
+		Code = 1 -> Расчёт был остановлен
+*/
+	if WildMatch(vMethod, 'receivable/*', 'contracts/inform/*', 'payments/report/*', 'regpoints/values/*', 'outages/report/*', 'inform/report/*', 'events/report/*', 'dzaging/report/*', 'agents/pathpoints/*', 'refs/branches/*', 'refs/warnnotes/*', 'pirrows/report/*', 'refs/hermestu/*', 'ocperiods/report/*', 'norms/report/*', 'naumen/answer/*', 'naumen/callcode/*', 'informpays/report/*', 'notifications/report/*', 'ufreleases/report/*') then
+    	Trace Вызов метода '$(vMethod)';
+		Let vMethodName = Replace(vMethod, '/', '_');
+        Let _Sirena_Receivable_$(vMethodName)_Status = '';
+		
+		if len('$(sWebServiceConnection)') > 0 then
+		    Let _Sirena_URI = '$(sWebServiceConnection)';
+		Else
+			Let _Sirena_URI = 'http://10.1.14.17:57772/api/qlick';
+			Let _Sirena_URI = 'http://10.1.2.31:57772/api/qlik';
+			Let _Sirena_URI = 'http://sirena-tst-esb:57772/api/qlik';
+			Let _Sirena_URI = 'http://srv-sirena-test:57772/api/qlik';
+		End If
+		
+		//Вызов Get методов
+		if (vMethod like '*/check') or (vMethod like '*/stop') then
+        	LIB CONNECT TO 'Sirena_Receivable_Get';
+            RestConnectorMasterTable:
+            SQL SELECT 
+                "Code",
+                "Description"
+            FROM JSON (wrap on) "root"
+            With Connection (
+            URL "$(_Sirena_URI)/$(vMethod)"
+            )
+            ;
+        //Вызов POST методов
+        elseif (vMethod like '*/start') then
+        	let param = ;
+            
+            //Проверка параметров Post методов и формирование строки с параметрами
+            if(vMethod = 'receivable/start') and (Len(vDateStart)=10 and Len(vDateEnd)=10 and Len(vDogType)>=1) then               
+                let param = '{""DateStart"":""$(vDateStart)"",""DateEnd"":""$(vDateEnd)"",""DogType"":""$(vDogType)""}';                
+            Elseif (vMethod = 'contracts/inform/start') and (Len(vDateStart)=10 and Len(vDateEnd)=10) then  
+            	let param = '{""DateStart"":""$(vDateStart)"",""DateEnd"":""$(vDateEnd)""}';           //
+            Elseif (vMethod = 'payments/report/start') and (Len(vDateStart)=10 and Len(vDateEnd)=10) then  
+            	let param = '{""DateStart"":""$(vDateStart)"",""DateEnd"":""$(vDateEnd)""}';    
+            Elseif (vMethod = 'regpoints/values/start') and (Len(vDateStart)=10 and Len(vDateEnd)=10) then  
+            	let param = '{""DateStart"":""$(vDateStart)"",""DateEnd"":""$(vDateEnd)""}';
+            Elseif (vMethod = 'outages/report/start') and (Len(vDateStart)=10) then  
+            	let param = '{""DateStart"":""$(vDateStart)""}';
+            Elseif (vMethod = 'inform/report/start') and (Len(vDateStart)=10 and Len(vDateEnd)=10) then  
+            	let param = '{""DateStart"":""$(vDateStart)"",""DateEnd"":""$(vDateEnd)""}';
+            Elseif (vMethod = 'events/report/start') and (Len(vDateStart)=10 and Len(vDateEnd)=10) then  
+            	let param = '{""EndDateFrom"":""$(vDateStart)"",""EndDateTo"":""$(vDateEnd)""}';
+            Elseif (vMethod = 'dzaging/report/start') and (Len(vDateStart)=10 and Len(vDogType)>=1 and Len(vOstType)=1) then  
+            	let param = '{""DateReport"":""$(vDateStart)"",""DogType"":""$(vDogType)"",""OstType"":""$(vOstType)""}';
+            Elseif (WildMatch(vMethod, 'refs/hermestu/*', 'norms/report/*')) and (Len(vDateStart)=10) then  
+            	let param = '{""DateReport"":""$(vDateStart)""}';
+            Elseif (WildMatch(vMethod, 'naumen/answer/*', 'informpays/report/*')) and (Len(vDateStart)=10 and Len(vDateEnd)=10) then  
+            	let param = '{""DateFrom"":""$(vDateStart)"",""DateTo"":""$(vDateEnd)""}';
+            Elseif (WildMatch(vMethod, 'notifications/report/*')) and (Len(vDateStart)=10 and Len(vDogType)>=1) then
+            	let param = '{""DateReport"":""$(vDateStart)"",""ProdCode"":""$(vDogType)""}';
+            Elseif (WildMatch(vMethod, 'ufreleases/report/*')) and (Len(vDateStart)>=6 and Len(vDateStart)<=7 and Len(vDogType)>=1) then
+            	let param = '{""ReportPeriod"":""$(vDateStart)"",""ProdCode"":""$(vDogType)""}';
+			Elseif WildMatch(vMethod, 'agents/pathpoints/*', 'refs/branches/*', 'refs/warnnotes/*', 'pirrows/report/*', 'ocperiods/report/*', 'naumen/callcode/*') then
+            	let param = '{}';
+            EndIf
+            	
+            Trace Вызов метода [$(vMethod)] с параметрами [$(param)];
+                
+            if(len(param)>0) then
+                
+                LIB CONNECT TO 'Sirena_Receivable_Post';
+                RestConnectorMasterTable:
+                SQL SELECT
+                    "Code",
+                    "Description"
+                FROM JSON (wrap on) "root"
+                With Connection (
+                URL "$(_Sirena_URI)/$(vMethod)",
+                BODY "$(param)"
+                )
+                ;
+            Else
+            	Trace Для метода $(vMethod) не заданы параметры;
+            EndIf
+            param=;
+		else
+			Trace Не указан метод, поддерживаемый Sirena_Receivable(vMethod=метод) -- vMethod=$(vMethod);
+		EndIf
+		
+		Let vTableNo = TableNumber('RestConnectorMasterTable');
+
+		if not IsNull(vTableNo) then
+            [root]:
+            LOAD
+               Code
+               , Description
+            RESIDENT RestConnectorMasterTable;
+
+            DROP TABLE RestConnectorMasterTable;
+
+			Let sVal = Peek('Code');
+			Drop Table root;
+			
+			Let _Sirena_Receivable_$(vMethodName)_Status = sVal;
+			
+			Trace _Sirena_Receivable_$(vMethodName)_Status = $(sVal);
+			sVal=;
+        EndIf
+
+		vTableNo=;
+    Else
+    	Trace Не указан метод, поддерживаемый Sirena_Receivable(vMethod=метод) -- vMethod=$(vMethod);
+    EndIf
+End Sub
